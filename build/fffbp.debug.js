@@ -94,7 +94,7 @@ Fragments.prototype = {
 	D: false,
 
 	init: function(cache, conf){
-		this.D = conf.D || conf.debug
+		this.D = conf.D || conf.debug || this.D
 		this.cache = cache || {}
 	},
 
@@ -162,7 +162,9 @@ AC.prototype = {
 	checkCondition: function(node){
 		if (this.D) console.log("Checking condition for", node)
 		var condition = this.rmMustashes($(node).attr(this.PREFIX+"-condition"))
-		return !condition || this.appDataOP.execute(condition)
+		ret = !condition || this.appDataOP.execute(condition)
+		if (this.D) console.log("condition for","'"+(condition || "no showWhen found")+"'", ret? "satisfied":"not satisfied", node, this.appDataOP.current)
+		return ret
 	},
 	checkShowWhen: function(node){
 		var condition = this.rmMustashes($(node).attr(this.PREFIX+"-showWhen"))
@@ -280,7 +282,7 @@ Spinner.prototype = {
 }
 
 var hashWorker = function(){
-	this.params = {}
+	this.params = []
 	this.get()
 	this.hashChangeSource = "window"
 	this.currentHash = window.location.hash.substring(2)
@@ -288,7 +290,7 @@ var hashWorker = function(){
 
 hashWorker.prototype = {
 	get: function(){
-		var hashParams  =  {};
+		var hashParams = []
 		var e,
 				a = /\+/g, // Regex for replacing addition symbol with a space
 				r = /([^|;=]+)=?([^|;]*)/g,
@@ -296,30 +298,71 @@ hashWorker.prototype = {
 					return decodeURIComponent(s.replace(a,  " "))
 				},
 				q = window.location.hash.substring(2)
+
 		this.currentHash = q
 
-		while (e = r.exec(q))
-			hashParams[d(e[1])] = d(e[2]);
+		while (e = r.exec(q)){
+			var k = d(e[1]),
+					v = d(e[2]),
+					i = k.indexOf("_ds")
+			if (i === -1) {
+				var o = {"name": k}
+				o[k] = v
+				hashParams.push(o)
+			} else{
+				var x=this.find(k, hashParams)
+				x[k] = v
+			}
+		}
 
 		this.params = hashParams
 		return hashParams
 	},
-
+	find: function(key, o){
+		var i = key.indexOf("_ds")
+		if (i > -1) {
+			key = key.slice(0, i)
+		}
+		return (o || this.params).find(e => e.name === key)
+	},
 	makeHash: function(){
 		var h = []
-		$.each(this.params, function(k, o){
-			if (k && o) {
-				h.push(k+"="+o)
-			}
+		$.each(this.params, function(n, o){
+			$.each(o, function(k, v){
+				if (k!="name" && k && v) {
+					h.push(k+"="+v)
+				}
+			})
 		})
 		return "#!"+h.join("|")
 	},
 
-	update: function(o){
-		var self = this
-		$.each(o,  function(k, o){
-			self.params[k] = o
+	remove: function(o){
+		if (this.D) console.log("remove",o, this.params)
+		delete o
+		window.location.hash = this.makeHash()
+	},
+	clean: function(){
+		if (this.D) console.log(this.params)
+		this.params = Array.filter(this.params, function(e){
+			if (this.D) console.log(e, $("#"+e.name), $("#"+e.name).length)
+			return $("#"+e.name).length ? true : false
 		})
+	},
+	update: function(o){
+		if (this.D) console.log("update", o)
+		var self = this
+		$.each(o, function(k, v){
+			var x = self.find(k)
+			if (x) {
+				x[k] = v
+			} else {
+				var o = {"name": k}
+				o[k] = v
+				self.params.push(o)
+			}
+		})
+		this.clean()
 		if (this.D) console.log(this.params)
 		window.location.hash = this.makeHash()
 	}
@@ -339,15 +382,18 @@ var locationHash = new hashWorker()
 $(document).ready(function(){
 	var locale = {},
 			lang = $("html").attr("lang") || "en",
-			ac = new AC({D:true}),
+			D = DEBUG = $("html[debug]") ? true : false,
+			ac = new AC({"D": D}),
 			PREFIX = ac.PREFIX,
-			D = DEBUG = true,
 			trim = s => s.slice(0,100)+"...",
 			uuid = $.uuid,
 			noop = () => {}
 
 	window.ac = ac
-	//D = true
+
+	if (D) {
+		$.ajaxSetup({ cache: false });
+	}
 
 	/* Gets the nearest ac-dataPaths found from the root node and then stops. It prevents deeper ac-dataPaths from execution.*/
 	var getOuterDataPaths = (node) => {
@@ -392,7 +438,7 @@ $(document).ready(function(){
 			ac.trigger()
 			var ret = $(renderHelperDiv).html()
 			if (D) console.log("END: render", trim(ret))
-			//renderHelperDiv.remove()
+			renderHelperDiv.remove()
 			return cb(ret)
 		})
 	}
@@ -449,10 +495,10 @@ $(document).ready(function(){
 		}
 		//if (D) console.log("loadFragments: fragments found:", fragments)
 		var counter = fragments.length,
-				counterFN = () => {
+				counterFN = (err) => {
 					if (--counter === 0) {
 						if (D) console.log("END: loadFragments", context)
-						cb()
+						cb(err)
 					}
 				}
 
@@ -488,57 +534,56 @@ $(document).ready(function(){
 				currentCache = ac.appDataOP.current
 
 		node.innerHTML = ""
+		if (data) {
+			data.forEach(function(o){
+				ac.appDataOP.setCurrent(o)
 
-		data.forEach(function(o){
-			ac.appDataOP.setCurrent(o)
-
-			var $innerNode = $(
-				$.parseHTML(
-					ac.replaceVars("<temp>"+template+"</temp>")
-						.replace(/\$\$(.*)\$\$/, p => subDataPathsCache[p.slice(2, -2)])
+				var $innerNode = $(
+					$.parseHTML(
+						ac.replaceVars("<temp>"+template+"</temp>")
+							.replace(/\$\$(.*)\$\$/, p => subDataPathsCache[p.slice(2, -2)])
+					)
 				)
-			)
 
-			var $nodesWithSW = ac.getNodesWithShowWhen($innerNode)
+				var $nodesWithSW = ac.getNodesWithShowWhen($innerNode)
 
-			if ($nodesWithSW.length) {
-				$nodesWithSW.each(function(n, el){
-					if (ac.checkShowWhen(el)) {
-						$(this).removeAttr(PREFIX+"-showWhen")
-					} else {
-						$(this).remove()
-					}
-				})
-			}
+				if ($nodesWithSW.length) {
+					$nodesWithSW.each(function(n, el){
+						if (ac.checkShowWhen(el)) {
+							$(this).removeAttr(PREFIX+"-showWhen")
+						} else {
+							$(this).remove()
+						}
+					})
+				}
 
-			var dp = getOuterDataPaths($innerNode)
+				var dp = getOuterDataPaths($innerNode)
 
-			if(dp.length){
-				//if (D)
-				dp.each(renderDataPath)
-			}
-			//console.warn("bbbb", $innerNode.html())
-			$(node).append($innerNode.children())
-		})
+				if(dp.length){
+					dp.each(renderDataPath)
+				}
+				$(node).append($innerNode.children())
+			})
+		}
 		$(node).removeAttr(PREFIX+"-dataPath")
 		ac.appDataOP.setCurrent(currentCache)
 		if (D) console.log("END: renderDataPath")
 	}
 
-	var	lang = $("html").attr("lang") || "en"
-
-	var x = $.ajax({
-		url:"/locale/"+$("html").attr("lang")+".json",
-		success:function(data){
-			ac.appData.locale = locale = data
-			//updateLocales()
-		},
-		error:function(e, b, c, d){
-			console.error("Problem with Locale file at /locale/"+$("html").attr("lang")+".json\n",  c)
-		},
-		dataType:"json",
-		async:false
-	})
+	//var	lang = $("html").attr("lang") || "en"
+	//
+	//var x = $.ajax({
+	//	url:"/locale/"+$("html").attr("lang")+".json",
+	//	success:function(data){
+	//		ac.appData.locale = locale = data
+	//		//updateLocales()
+	//	},
+	//	error:function(e, b, c, d){
+	//		console.error("Problem with Locale file at /locale/"+$("html").attr("lang")+".json\n",  c)
+	//	},
+	//	dataType:"json",
+	//	async:false
+	//})
 
 	var refreshState = function(){
 	  var event = jQuery.Event("beforehashchange");
@@ -547,23 +592,29 @@ $(document).ready(function(){
 	    return
 	  }
 		var state = locationHash.get()
-		if ($.isEmptyObject(state)) {
-			loadFragment($("body>div")[0])
-		}
-		$.each(state, function(k, o){
-			if (k.indexOf("_ds") !== -1) {
-				return
-			}
-			$("#"+k).attr(PREFIX+"-fragment", state[k])
-							.attr(PREFIX+"-dataSource", state[k+"_ds"])
+		// TODO probably depreciated
+		//if ($.isEmptyObject(state)) {
+		//	loadFragment($("body>div")[0])
+		//}
+		var load = function(o){
+			var el = $("#"+o.name)
+			el.attr(PREFIX+"-fragment", o[o.name])
+				.attr(PREFIX+"-dataSource", o[o.name+"_ds"])
 			// detect Bootstrap modal
-			var modal = $("#"+k).parents(".modal")
+			var modal = $("#"+o.name).parents(".modal")
 			// $(modal).is(":visible") fixes: close modal -> open modal -> you see recent step instead of first but the gluu building process is not in the session. Should be deleted when the lib goes for general use.
 			if (window.location.hostname === "127.0.0.1" || window.location.hostname === "localhost" || (modal && $(modal).is(":visible")) ) {
 				modal.modal()
 			}
-			loadFragment($("#"+k)[0])
-		})
+			loadFragment($("#"+o.name)[0], function(){
+				if (state.length) {
+					load(state.shift())
+				}
+			})
+		}
+		if (state.length) {
+			load(state.shift())
+		}
 	}
 
 	window.onhashchange = function(){
@@ -582,35 +633,38 @@ $(document).ready(function(){
 
 	$("body").on("click", "a,  button", function(e){
 		locationHash.hashChangeSource = "internal"
-		if (!$(e.currentTarget).attr(PREFIX+"-target")) {
+
+		var $currentTarget = $(e.currentTarget)
+
+		if (!$currentTarget.attr(PREFIX+"-target")) {
 			return
 		}
-		var href = $(e.currentTarget).attr("href")
+		var href = $currentTarget.attr("href")
 		if (href && href[0] === "#") {
 			e.preventDefault()
 			return
 		}
 		e.preventDefault()
-	  var event  =  jQuery.Event("beforehashchange");
+	  var event = jQuery.Event("beforehashchange")
 	  $(document).trigger(event)
 	  if (event.isDefaultPrevented()){
 	    return
 	  }
-		var currentTarget = $(e.currentTarget)
-				targetSelector = currentTarget.attr(PREFIX+"-target"),
-				href = currentTarget.attr("href"),
-				currFragment = $(targetSelector).attr(PREFIX+"-fragment"),
-				condition = ac.rmMustashes(currentTarget.attr(PREFIX+"-condition"))
+		var targetSelector = $currentTarget.attr(PREFIX+"-target"),
+				href = $currentTarget.attr("href"),
+				currFragment = $(targetSelector).attr(PREFIX+"-fragment")
 
-		currentTarget.parents(".nav").find("*[ac-target="+targetSelector+"].active").removeClass("active")
-		currentTarget.addClass("active")
-		var spinner = new Spinner(currentTarget)
+		$currentTarget.parents(".nav")
+									.find("*[ac-target="+targetSelector+"].active")
+									.removeClass("active")
+		$currentTarget.addClass("active")
 
-		if (condition && !ac.appDataOP.execute(condition)) {
-			if (D) console.log("condition "+condition+" not satisfied")
+		var spinner = new Spinner($currentTarget)
+
+		if (!ac.checkCondition($currentTarget)) {
 			return
 		}
-		if (D) console.log("condition "+condition+" satisfied")
+
 		if (href[0] === "/") {
 			href = href.slice(1)
 		}
@@ -620,24 +674,21 @@ $(document).ready(function(){
 			if (D) console.log("currFragment", targetSelector)
 			var t = $(targetSelector)
 			if (!t[0]) {
-				console.error("Target element "+targetSelector+" not found!")
+				console.error("Target element", targetSelector, "not found!")
 				return
 			}
 			t.attr(PREFIX+"-fragment", href)
-			t.attr(PREFIX+"-dataSource", currentTarget.attr(PREFIX+"-dataSource") || "")
+			t.attr(PREFIX+"-dataSource", $currentTarget.attr(PREFIX+"-dataSource") || "")
 
-			loadFragment(t[0], (lf) =>{
-				console.log(lf)
-				if (lf) {
-				//console.log("lf is t")
-
-					currentTarget.spinner.error("ERROR: "+lf["message"])
+			loadFragment(t[0], (err) =>{
+				if (err) {
+					$currentTarget.spinner.error("ERROR: " + lf["message"])
 					return
 				}
 				ac.trigger()
-				currentTarget.spinner.success()
+				$currentTarget.spinner.success()
 
-				var r = currentTarget.attr(PREFIX+"-redirect")
+				var r = $currentTarget.attr(PREFIX+"-redirect")
 				if (r) {
 					window.location = r
 					return
@@ -653,7 +704,7 @@ $(document).ready(function(){
 				locationHash.update(d)
 			})
 		}
-		if (D) console.log(e.currentTarget, targetSelector, href)
+		if (D) console.log($currentTarget, targetSelector, href)
 	})
 
 	// TODO,  optimization: check if $("body").on("submit", "form", ...) works
@@ -689,8 +740,8 @@ $(document).ready(function(){
 					var error = false
 					for(var key in e){
 						if (e[key]["@status"] === "error") {
-							error = e[key]["@message"] || e[key]["@error"]
-							var errorDiv = btn.parents("form").find(".ac-error."+e[key]["@error"])
+							error = e[key]["message"] || e[key]["error"]
+							var errorDiv = btn.parents("form").find(".ac-error."+e[key]["error"])
 							if (errorDiv) errorDiv.addClass("show")
 							break
 						}

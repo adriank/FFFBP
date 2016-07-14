@@ -93,7 +93,7 @@ Fragments.prototype = {
 	D: false,
 
 	init: function(cache, conf){
-		this.D = conf.D || conf.debug
+		this.D = conf.D || conf.debug || this.D
 		this.cache = cache || {}
 	},
 
@@ -161,7 +161,9 @@ AC.prototype = {
 	checkCondition: function(node){
 		if (this.D) console.log("Checking condition for", node)
 		var condition = this.rmMustashes($(node).attr(this.PREFIX+"-condition"))
-		return !condition || this.appDataOP.execute(condition)
+		ret = !condition || this.appDataOP.execute(condition)
+		if (this.D) console.log("condition for","'"+(condition || "no showWhen found")+"'", ret? "satisfied":"not satisfied", node, this.appDataOP.current)
+		return ret
 	},
 	checkShowWhen: function(node){
 		var condition = this.rmMustashes($(node).attr(this.PREFIX+"-showWhen"))
@@ -279,7 +281,7 @@ Spinner.prototype = {
 }
 
 var hashWorker = function(){
-	this.params = {}
+	this.params = []
 	this.get()
 	this.hashChangeSource = "window"
 	this.currentHash = window.location.hash.substring(2)
@@ -287,7 +289,7 @@ var hashWorker = function(){
 
 hashWorker.prototype = {
 	get: function(){
-		var hashParams  =  {};
+		var hashParams = []
 		var e,
 				a = /\+/g, // Regex for replacing addition symbol with a space
 				r = /([^|;=]+)=?([^|;]*)/g,
@@ -295,30 +297,71 @@ hashWorker.prototype = {
 					return decodeURIComponent(s.replace(a,  " "))
 				},
 				q = window.location.hash.substring(2)
+
 		this.currentHash = q
 
-		while (e = r.exec(q))
-			hashParams[d(e[1])] = d(e[2]);
+		while (e = r.exec(q)){
+			var k = d(e[1]),
+					v = d(e[2]),
+					i = k.indexOf("_ds")
+			if (i === -1) {
+				var o = {"name": k}
+				o[k] = v
+				hashParams.push(o)
+			} else{
+				var x=this.find(k, hashParams)
+				x[k] = v
+			}
+		}
 
 		this.params = hashParams
 		return hashParams
 	},
-
+	find: function(key, o){
+		var i = key.indexOf("_ds")
+		if (i > -1) {
+			key = key.slice(0, i)
+		}
+		return (o || this.params).find(e => e.name === key)
+	},
 	makeHash: function(){
 		var h = []
-		$.each(this.params, function(k, o){
-			if (k && o) {
-				h.push(k+"="+o)
-			}
+		$.each(this.params, function(n, o){
+			$.each(o, function(k, v){
+				if (k!="name" && k && v) {
+					h.push(k+"="+v)
+				}
+			})
 		})
 		return "#!"+h.join("|")
 	},
 
-	update: function(o){
-		var self = this
-		$.each(o,  function(k, o){
-			self.params[k] = o
+	remove: function(o){
+		if (this.D) console.log("remove",o, this.params)
+		delete o
+		window.location.hash = this.makeHash()
+	},
+	clean: function(){
+		if (this.D) console.log(this.params)
+		this.params = Array.filter(this.params, function(e){
+			if (this.D) console.log(e, $("#"+e.name), $("#"+e.name).length)
+			return $("#"+e.name).length ? true : false
 		})
+	},
+	update: function(o){
+		if (this.D) console.log("update", o)
+		var self = this
+		$.each(o, function(k, v){
+			var x = self.find(k)
+			if (x) {
+				x[k] = v
+			} else {
+				var o = {"name": k}
+				o[k] = v
+				self.params.push(o)
+			}
+		})
+		this.clean()
 		if (this.D) console.log(this.params)
 		window.location.hash = this.makeHash()
 	}
